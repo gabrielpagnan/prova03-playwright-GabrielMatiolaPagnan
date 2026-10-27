@@ -2,50 +2,69 @@ name: Build and Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
-  schedule:   
-    - cron: '0 12 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: playwright-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     name: Run E2E Tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v5.0.0
-    - name: Use Node.js 22
-      uses: actions/setup-node@v6.0.0
-      with:
-        node-version: 22
-    - run: npm install 
-    - name: Check preinstalled Microsoft Edge
-      run: microsoft-edge --version
-    - run: npm run actions  
-      env:
-        ZEROSTEP_TOKEN: ${{ secrets.ZEROSTEP_TOKEN }}       
-    - name: Upload Playwright report
-      if: ${{ !cancelled() }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: playwright-report
-        path: artifacts/
-        retention-days: 7
+      - uses: actions/checkout@v7.0.1
+      - name: Use Node.js 22
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies from lockfile
+        run: npm ci
+      - name: Check TypeScript
+        run: npm run typecheck
+      - name: Check formatting
+        run: npm run verify
+      - name: Install Playwright Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright tests
+        run: npm run actions
+      - name: Upload Playwright report and failure traces
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: playwright-report-${{ github.run_attempt }}
+          path: artifacts/
+          retention-days: 7
 
   sonarcloud:
     name: Run SonarCloud
-    runs-on: ubuntu-latest
+    # Analyze main and pull requests; do not require paid branch analysis.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5.0.0
+      - uses: actions/checkout@v7.0.1
         with:
-          fetch-depth: 0  
-      - name: Setup Node.js environment
-        uses: actions/setup-node@v6.0.0
+          fetch-depth: 0
+      - name: Use Node.js 22
+        uses: actions/setup-node@v7.1.0
         with:
-          node-version: 22 
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v6.0.0    
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: SonarCloud Scan and Quality Gate
+        uses: SonarSource/sonarqube-scan-action@v8.4.0
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
